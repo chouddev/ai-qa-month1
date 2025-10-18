@@ -1,0 +1,135 @@
+name: Cypress Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    - cron: '0 2 * * *' # Run daily at 2 AM
+
+jobs:
+  cypress-run:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        browser: [chrome, firefox, edge]
+        
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: |
+          npm ci
+          npx cypress install
+          
+      - name: Run Cypress tests
+        uses: cypress-io/github-action@v6
+        with:
+          browser: ${{ matrix.browser }}
+          record: true
+          parallel: true
+          group: ${{ matrix.browser }}-tests
+          spec: |
+            cypress/e2e/authentication/**/*.cy.js
+            cypress/e2e/patient-management/**/*.cy.js
+            cypress/e2e/appointments/**/*.cy.js
+            cypress/e2e/api/**/*.cy.js
+        env:
+          CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cypress-results-${{ matrix.browser }}
+          path: |
+            cypress/videos
+            cypress/screenshots
+            cypress/reports
+            
+  smoke-tests:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: |
+          npm ci
+          npx cypress install
+          
+      - name: Run smoke tests
+        run: npm run test:smoke
+        
+      - name: Upload smoke test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-test-results
+          path: |
+            cypress/videos
+            cypress/screenshots
+            
+  regression-tests:
+    runs-on: ubuntu-latest
+    needs: smoke-tests
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          
+      - name: Install dependencies
+        run: |
+          npm ci
+          npx cypress install
+          
+      - name: Run regression tests
+        run: npm run test:regression
+        
+      - name: Upload regression test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regression-test-results
+          path: |
+            cypress/videos
+            cypress/screenshots
+            
+  notify:
+    runs-on: ubuntu-latest
+    needs: [cypress-run, smoke-tests, regression-tests]
+    if: always()
+    
+    steps:
+      - name: Notify test results
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          channel: '#qa-notifications'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        if: always()
+

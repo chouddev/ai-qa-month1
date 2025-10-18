@@ -1,0 +1,252 @@
+pipeline {
+    agent any
+    
+    parameters {
+        choice(
+            name: 'BROWSER',
+            choices: ['chrome', 'firefox', 'edge'],
+            description: 'Select browser for testing'
+        )
+        choice(
+            name: 'TEST_TYPE',
+            choices: ['smoke', 'regression', 'all'],
+            description: 'Select test type to run'
+        )
+        booleanParam(
+            name: 'HEADLESS',
+            defaultValue: true,
+            description: 'Run tests in headless mode'
+        )
+    }
+    
+    environment {
+        NODE_VERSION = '18'
+        CYPRESS_BASE_URL = 'https://www.virgohealthcare.in'
+        CYPRESS_API_URL = 'https://api.virgohealthcare.in'
+        CYPRESS_ADMIN_EMAIL = 'admin@virgohealthcare.com'
+        CYPRESS_ADMIN_PASSWORD = 'AdminPassword123!'
+        CYPRESS_TEST_USER_EMAIL = 'test@virgohealthcare.com'
+        CYPRESS_TEST_USER_PASSWORD = 'TestPassword123!'
+        CYPRESS_DOCTOR_EMAIL = 'doctor@virgohealthcare.com'
+        CYPRESS_DOCTOR_PASSWORD = 'DoctorPassword123!'
+        CYPRESS_PATIENT_EMAIL = 'patient@virgohealthcare.com'
+        CYPRESS_PATIENT_PASSWORD = 'PatientPassword123!'
+    }
+    
+    triggers {
+        cron('0 6 * * *') // Run daily at 6 AM UTC
+        pollSCM('H/15 * * * *') // Poll SCM every 15 minutes
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                echo 'Checking out source code...'
+                checkout scm
+            }
+        }
+        
+        stage('Setup Node.js') {
+            steps {
+                echo 'Setting up Node.js environment...'
+                sh '''
+                    node --version
+                    npm --version
+                '''
+            }
+        }
+        
+        stage('Install Dependencies') {
+            steps {
+                echo 'Installing npm dependencies...'
+                sh '''
+                    npm ci
+                    npx cypress install
+                '''
+            }
+        }
+        
+        stage('Run Smoke Tests') {
+            when {
+                anyOf {
+                    equals expected: 'smoke', actual: params.TEST_TYPE
+                    equals expected: 'all', actual: params.TEST_TYPE
+                }
+            }
+            steps {
+                echo 'Running smoke tests...'
+                script {
+                    try {
+                        sh '''
+                            npx cypress run \
+                                --browser ${BROWSER} \
+                                --spec "cypress/e2e/smoke-tests/**/*.cy.js" \
+                                --reporter mochawesome \
+                                --reporter-options "reportDir=cypress/reports/smoke,reportFilename=smoke-report.html"
+                        '''
+                    } catch (Exception e) {
+                        echo "Smoke tests failed: ${e.getMessage()}"
+                        currentBuild.result = 'UNSTABLE'
+                    }
+                }
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'cypress/reports/smoke',
+                        reportFiles: 'smoke-report.html',
+                        reportName: 'Smoke Test Report'
+                    ])
+                    archiveArtifacts artifacts: 'cypress/videos/**/*,cypress/screenshots/**/*,cypress/reports/**/*'
+                }
+            }
+        }
+        
+        stage('Run Regression Tests') {
+            when {
+                anyOf {
+                    equals expected: 'regression', actual: params.TEST_TYPE
+                    equals expected: 'all', actual: params.TEST_TYPE
+                }
+            }
+            steps {
+                echo 'Running regression tests...'
+                script {
+                    try {
+                        sh '''
+                            npx cypress run \
+                                --browser ${BROWSER} \
+                                --spec "cypress/e2e/regression-tests/**/*.cy.js" \
+                                --reporter mochawesome \
+                                --reporter-options "reportDir=cypress/reports/regression,reportFilename=regression-report.html"
+                        '''
+                    } catch (Exception e) {
+                        echo "Regression tests failed: ${e.getMessage()}"
+                        currentBuild.result = 'FAILURE'
+                    }
+                }
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'cypress/reports/regression',
+                        reportFiles: 'regression-report.html',
+                        reportName: 'Regression Test Report'
+                    ])
+                    archiveArtifacts artifacts: 'cypress/videos/**/*,cypress/screenshots/**/*,cypress/reports/**/*'
+                }
+            }
+        }
+        
+        stage('Generate Combined Report') {
+            steps {
+                echo 'Generating combined test report...'
+                sh '''
+                    mkdir -p cypress/reports/combined
+                    cat > cypress/reports/combined/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>VirgoHealthcare Test Results</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .header { background-color: #f0f0f0; padding: 20px; border-radius: 5px; }
+        .test-section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 5px; }
+        .success { background-color: #d4edda; border-color: #c3e6cb; }
+        .failure { background-color: #f8d7da; border-color: #f5c6cb; }
+        .link { color: #007bff; text-decoration: none; }
+        .link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>VirgoHealthcare Test Results</h1>
+        <p><strong>Build:</strong> ${BUILD_NUMBER} | <strong>Date:</strong> ${BUILD_TIMESTAMP} | <strong>Browser:</strong> ${BROWSER}</p>
+    </div>
+    
+    <div class="test-section">
+        <h2>Test Reports</h2>
+        <ul>
+            <li><a href="smoke/smoke-report.html" class="link">Smoke Test Report</a></li>
+            <li><a href="regression/regression-report.html" class="link">Regression Test Report</a></li>
+        </ul>
+    </div>
+    
+    <div class="test-section">
+        <h2>Artifacts</h2>
+        <ul>
+            <li><a href="../videos/" class="link">Test Videos</a></li>
+            <li><a href="../screenshots/" class="link">Test Screenshots</a></li>
+        </ul>
+    </div>
+</body>
+</html>
+EOF
+                '''
+            }
+            post {
+                always {
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'cypress/reports/combined',
+                        reportFiles: 'index.html',
+                        reportName: 'Combined Test Results'
+                    ])
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            echo 'Pipeline execution completed.'
+            cleanWs()
+        }
+        success {
+            echo 'All tests passed successfully!'
+            emailext (
+                subject: "✅ VirgoHealthcare Tests PASSED - Build ${BUILD_NUMBER}",
+                body: """
+                <h2>Test Results Summary</h2>
+                <p><strong>Build:</strong> ${BUILD_NUMBER}</p>
+                <p><strong>Status:</strong> SUCCESS ✅</p>
+                <p><strong>Browser:</strong> ${BROWSER}</p>
+                <p><strong>Test Type:</strong> ${TEST_TYPE}</p>
+                <p><strong>Build URL:</strong> ${BUILD_URL}</p>
+                <p><strong>Report:</strong> <a href="${BUILD_URL}HTML_Report/">View Detailed Report</a></p>
+                """,
+                to: "${env.CHANGE_AUTHOR_EMAIL ?: 'qa-team@virgohealthcare.com'}",
+                mimeType: 'text/html'
+            )
+        }
+        failure {
+            echo 'Tests failed!'
+            emailext (
+                subject: "❌ VirgoHealthcare Tests FAILED - Build ${BUILD_NUMBER}",
+                body: """
+                <h2>Test Results Summary</h2>
+                <p><strong>Build:</strong> ${BUILD_NUMBER}</p>
+                <p><strong>Status:</strong> FAILED ❌</p>
+                <p><strong>Browser:</strong> ${BROWSER}</p>
+                <p><strong>Test Type:</strong> ${TEST_TYPE}</p>
+                <p><strong>Build URL:</strong> ${BUILD_URL}</p>
+                <p><strong>Report:</strong> <a href="${BUILD_URL}HTML_Report/">View Detailed Report</a></p>
+                <p><strong>Console Output:</strong> <a href="${BUILD_URL}console">View Console</a></p>
+                """,
+                to: "${env.CHANGE_AUTHOR_EMAIL ?: 'qa-team@virgohealthcare.com'}",
+                mimeType: 'text/html'
+            )
+        }
+        unstable {
+            echo 'Some tests failed but pipeline continued.'
+        }
+    }
+}
